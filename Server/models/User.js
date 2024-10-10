@@ -1,16 +1,23 @@
-const mongoose = require("mongoose");
+// models/User.js
+const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
-  username: String,
-  location: {
-    type: { type: String, default: "Point" },
-    coordinates: [Number] // [longitude, latitude]
-  },
-  available: Boolean, // Marks user as available
+    username: {
+        type: String,
+        required: true,
+        unique: true, // Ensure usernames are unique
+    },
+    location: {
+        lat: {
+            type: Number,
+            required: true,
+        },
+        lon: {
+            type: Number,
+            required: true,
+        },
+    },
 });
 
-// Create geospatial index on location
-userSchema.index({ location: "2dsphere" });
-
-const User = mongoose.model("User", userSchema);
+const User = mongoose.model('User', userSchema);
 module.exports = User;

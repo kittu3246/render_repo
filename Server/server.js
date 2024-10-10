@@ -1,105 +1,105 @@
 // server.js
 const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
 const http = require('http');
 const socketIO = require('socket.io');
-const cors = require('cors');
+const userRoutes = require('./routes/userRoutes'); // Import user routes
+const User = require('./models/User'); // Ensure this points to your User model
+require('dotenv').config(); // Only if you still want to use .env for other variables
 
 const app = express();
 const server = http.createServer(app);
 const io = socketIO(server, {
-  cors: {
-    origin: "*", // Allow all origins
-    methods: ["GET", "POST"]
-  }
+    cors: {
+        origin: '*',
+        methods: ['GET', 'POST'],
+    },
 });
 
-// Middleware
 app.use(cors());
 app.use(express.json());
+app.use('/api/users', userRoutes); // Use user routes
 
-let users = []; // Store registered users and their locations
+// MongoDB connection string
+const MONGODB_URI = "mongodb://localhost:27017/nearest-user-db";
 
-// Utility function to calculate distance between two points (Haversine formula)
-function calculateDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371; // Radius of the earth in km
-  const dLat = (lat2 - lat1) * (Math.PI / 180);
-  const dLon = (lon2 - lon1) * (Math.PI / 180);
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c; // Distance in km
-}
-
-// REST API endpoint to register a user
-app.post('/register', (req, res) => {
-  const { username, latitude, longitude } = req.body;
-
-  if (!username || !latitude || !longitude) {
-    return res.status(400).json({ error: 'Invalid input' });
-  }
-
-  console.log(`User registered: ${username}, Lat: ${latitude}, Lon: ${longitude}`);
-  res.status(200).json({ message: 'User registered successfully' });
+mongoose.connect(MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+}).then(() => {
+    console.log('MongoDB connected');
+}).catch(err => {
+    console.error('MongoDB connection error:', err);
 });
 
-// WebSocket connection handling
+// Function to calculate distance between two points (Haversine formula)
+const calculateDistance = (lat1, lon1, lat2, lon2) => {
+    const R = 6371; // Radius of the Earth in km
+    const dLat = (lat2 - lat1) * (Math.PI / 180);
+    const dLon = (lon2 - lon1) * (Math.PI / 180);
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+              Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c; // Distance in km
+};
+
+// Socket connection
 io.on('connection', (socket) => {
-  console.log('New user connected:', socket.id);
+    console.log('New client connected');
 
-  // Register user with location
-  socket.on('registerUser', (userData) => {
-    const { username, latitude, longitude } = userData;
-    console.log(`User registered with WebSocket: ${username}`);
+    // Event listener for user registration
+    socket.on('register_user', async (data) => {
+        const { username, location } = data;
+        const user = new User({ username, location });
+        await user.save();
+        console.log(`User registered: ${username}`);
 
-    // Store user in the in-memory users array
-    users.push({
-      id: socket.id,
-      username,
-      latitude,
-      longitude
-    });
-  });
-
-  // Handle sending a message/request
-  socket.on('sendMessage', (data) => {
-    const { message, latitude, longitude } = data;
-    console.log(`Message from ${latitude}, ${longitude}: ${message}`);
-
-    // Find the nearest user
-    let nearestUser = null;
-    let minDistance = Infinity;
-
-    users.forEach(user => {
-      const distance = calculateDistance(latitude, longitude, user.latitude, user.longitude);
-      if (distance < minDistance) {
-        nearestUser = user;
-        minDistance = distance;
-      }
+        // Store socket ID in user document for message sending
+        user.socketId = socket.id;
+        await user.save();
     });
 
-    if (nearestUser) {
-      // Send message to the nearest user
-      io.to(nearestUser.id).emit('receiveRequest', {
-        message,
-        senderLocation: { latitude, longitude }
-      });
-      console.log(`Message sent to nearest user: ${nearestUser.username}`);
-    } else {
-      console.log('No users found nearby.');
-    }
-  });
+    // Event listener for sending messages
+    socket.on('send_message', async (data) => {
+        const { username, message } = data;
 
-  // Handle disconnect
-  socket.on('disconnect', () => {
-    users = users.filter(user => user.id !== socket.id);
-    console.log(`User disconnected: ${socket.id}`);
-  });
+        // Find the sender
+        const sender = await User.findOne({ username });
+        const users = await User.find({ username: { $ne: username } }); // Exclude the sender
+
+        let nearestUser = null;
+        let nearestDistance = Infinity;
+
+        // Calculate the nearest user based on distance
+        users.forEach(user => {
+            const distance = calculateDistance(sender.location.lat, sender.location.lon, user.location.lat, user.location.lon);
+            if (distance < nearestDistance) {
+                nearestDistance = distance;
+                nearestUser = user;
+            }
+        });
+
+        if (nearestUser) {
+            // Emit the message to the nearest user
+            io.to(nearestUser.socketId).emit('receive_message', {
+                from: username,
+                message: message
+            });
+            console.log(`Message from ${username} sent to nearest user: ${nearestUser.username}`);
+        } else {
+            console.log('No users available to send the message');
+        }
+    });
+
+    socket.on('disconnect', () => {
+        console.log('Client disconnected');
+    });
 });
 
-// Start server
+// Server setup
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });
